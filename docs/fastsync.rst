@@ -56,14 +56,23 @@ can be inserted. Basically, given a Frame, we can initialize a new Hashgraph and
 continue gossiping on top of it; earlier records of the gossip history are 
 discarded/pruned. 
 
+
+.. image:: assets/dag_frames_bx.png
+
 A Frame corresponds to a Hashgraph consensus round. Indeed, the consensus 
-algorithm commits Events in batches, which we map onto a Frame, and finally onto 
+algorithm commits Events in batches, which we map onto Frames, and finally onto 
 a Blockchain. This is an evolution of the previously defined :ref:`blockchain 
 mapping <blockchain>`. Block headers now contain a Frame hash. As we will see 
 later, this is useful for security. The Events in a Frame are the Events of the 
 corresponding batch, in consensus order.
 
-.. image:: assets/dag_frames_bx.png
+::
+
+  type Frame struct {
+  	Round  int     //RoundReceived
+  	Roots  []Root  // [participant ID] => Root
+  	Events []Event //Event with RoundReceived = Round
+  }
 
 Roots
 -----
@@ -140,44 +149,72 @@ why? Not all Frames can be used to Reset/Fastforward a hashgraph
 FastForward
 -----------
 
-Block, Frame => Reset
+Given a Frame, we can initialize or reset a Hashgraph to a clean state with 
+indexes, rounds, blocks, etc., corresponding to a capture of a live run, such 
+that further Events may be inserted and processed independently of past Events. 
+This is loosely analogous to IFrames in video encoding, where one can 
+fast-forward to any point in the video by downloading a reference IFrame and 
+applying diffs to it.   
 
-Check signatures against frame hash
+To avoid being tricked into fast-forwarding to an invalid state, the protocol 
+ties Frames to the corresponding Blockchain by including Frame hashes in 
+affiliated Block headers. A *FastForwardResponse* includes a Block and a Frame,
+such that, upon receiving these objects, the requester may check the Frame hash
+against the Block header, and count the Block signatures against the **known** 
+set of validators, before resetting the Hashgraph from the Frame. 
 
+Note the importance for the requester to be aware of the validaor set of the 
+Hashgraph it wishes to sync with; this is how they can verify the Block 
+signatures. With a dynamic validator set, an additional mechanism will be 
+necessary to securely track changes to the validator set. 
 
+Snapshot/Restore
+----------------
 
-A Hashgraph may be initalized or reset from a Frame. Clear the Store, insert
-Roots, and insert Event on top. SetBlock, SetLastConsensusRound => consensus 
-methods and blockchain continue from the Frame.
+It's one thing to catch-up with the Hashgraph and Blockchain, but nodes also
+need to catch-up with the application state. we extended the Proxy interface 
+with methods to take and restore snapshots. 
 
+::
 
-Resetting a Hashgraph from a Frame
+  type AppProxy interface {
+  	SubmitCh() chan []byte
+  	CommitBlock(block hashgraph.Block) ([]byte, error)
+  	GetSnapshot(blockIndex int) ([]byte, error)
+  	Restore(snapshot []byte) error
+  }
 
-Importance of Agreeing on Roots (need to be signed somehow) => Frame, FrameHash,
-Block signatures
+Snapshots are raw byte arrays, so it is up to the application layer to define 
+what the snapshots represent, how they are encoded, and how they are used to 
+restore the application to a particular state. The *GetSnapshot* method does
+take a *blockIndex* int parameter, which implies that the application should 
+somehow keep track of snapshots for every committed block. As the protocol 
+evolves, we will likely link this to a *FrameRate* parameter to reduce the 
+overload on the application caused by the need to take all these snapshots.
 
-Reseting can fail if there were undecided Events below the Frame
+So together with a Frame and the corresponding Block, a FastForward request 
+comes with a Snapshot of the application for the node to restore the application
+to the corresponding state. If the Snapshot was incorrect, the node will 
+immediately diverge from the main chain because it will obtain different state
+hashes upon committing new blocks.
 
-AnchorBlock
------------
+Improvements and Furter Work
+----------------------------
 
-Collecting signatures, Importance of Blockchain mapping
+The protocol is not entirely water tight yet. There are edge cases that could 
+quickly lead to forks and diverging nodes. 
 
-FrameRate?
+1) Events above the Frame that reference parents from before the Frame.
+This is the cost of the Frame size vs content tradeoff.
 
-State Snapshot Interface
-------------------------
+2) The snapshot is not linked to the blockchain yet, only indirectly through
+resulting StateHashes
 
-Snapshot / Restore
+Both these issues could be addressed with a general retry method. Make the 
+FastForward method atomic, work on temporary copy of the Hashgraph, if a fork is
+detected, try to FastSync again. This requires further work and policies on fork
+detection and self-healing protocols.
 
-'Loose' protocol
-
-Verification
-------------
-
-FrameHash + Snapshot + StateHash
-
-Counting signatures
 
 
 
